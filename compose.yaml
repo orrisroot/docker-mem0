@@ -1,0 +1,111 @@
+name: mem0
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      # Local disk bind mount for Ollama model weights
+      - ./volumes/ollama:/root/.ollama
+    networks:
+      - mem0_network
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-4}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    shm_size: "256mb"
+    networks:
+      - mem0_network
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d ${POSTGRES_DB:-postgres} -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      # Local disk bind mount for PostgreSQL data
+      - ./volumes/postgres:/var/lib/postgresql/data
+      - ./repo/server/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+
+  mem0:
+    build:
+      context: ./repo
+      dockerfile: server/dev.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${MEM0_PORT:-8888}:8000"
+    env_file:
+      - .env
+    networks:
+      - mem0_network
+    volumes:
+      # Local disk bind mount for history and server code
+      - ./volumes/history:/app/history
+      - ./repo/server:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    command: >
+      sh -c "rm -rf /app/packages && pip install -q --force-reinstall --no-deps mem0ai && alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      PYTHONDONTWRITEBYTECODE: 1
+      PYTHONUNBUFFERED: 1
+      PYTHONPATH: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      APP_DB_NAME: ${APP_DB_NAME:-mem0_app}
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      AUTH_DISABLED: ${AUTH_DISABLED:-false}
+      MEM0_TELEMETRY: ${MEM0_TELEMETRY:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-ollama}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://ollama:11434/v1}
+      MEM0_DEFAULT_LLM_MODEL: ${MEM0_DEFAULT_LLM_MODEL:-qwen2.5:7b}
+      MEM0_DEFAULT_EMBEDDER_MODEL: ${MEM0_DEFAULT_EMBEDDER_MODEL:-bge-m3}
+      MEM0_DEFAULT_EMBEDDER_DIMS: ${MEM0_DEFAULT_EMBEDDER_DIMS:-1024}
+
+  mem0-dashboard:
+    build:
+      context: ./repo/server/dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-3000}:3000"
+    networks:
+      - mem0_network
+    environment:
+      NEXT_PUBLIC_API_URL: ${DASHBOARD_API_URL:-http://localhost:8888}
+      API_INTERNAL_URL: http://mem0:8000
+      NEXT_PUBLIC_INSTANCE_NAME: ${INSTANCE_NAME:-Mem0}
+    depends_on:
+      mem0:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  mem0_network:
+    driver: bridge
