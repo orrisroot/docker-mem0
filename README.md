@@ -1,4 +1,4 @@
-# Self-Hosted Mem0 Multi-User Memory Service (with Bundled Ollama)
+# Self-Hosted Mem0 Multi-User Memory Service
 
 A production-ready Docker Compose deployment configuration for self-hosting a multi-user, persistent memory service using [Mem0](https://github.com/mem0ai/mem0), an integrated GPU-accelerated [Ollama](https://ollama.com/) inference engine, and PostgreSQL with the `pgvector` extension.
 
