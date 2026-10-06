@@ -1,9 +1,20 @@
-.PHONY: up down restart clean logs build health seed reset-admin-password prune-logs pull-models list-models
+.PHONY: up down restart clean logs build health seed reset-admin-password prune-logs pull-models list-models patch
 
-API_URL ?= http://localhost:8888
-DASHBOARD_URL ?= http://localhost:3000
-LLM_MODEL ?= qwen2.5:7b
-EMBEDDER_MODEL ?= bge-m3
+-include .env
+export
+
+API_PORT ?= $(or $(MEM0_PORT),8888)
+DASHBOARD_PORT ?= 3000
+API_SUBPATH ?= $(MEM0_ROOT_PATH)
+DASHBOARD_SUBPATH ?= $(DASHBOARD_BASE_PATH)
+
+API_URL ?= $(or $(API_URL),$(DASHBOARD_API_URL),http://localhost:$(API_PORT)$(API_SUBPATH))
+DASHBOARD_URL ?= $(or $(DASHBOARD_URL),http://localhost:$(DASHBOARD_PORT)$(DASHBOARD_SUBPATH))
+LLM_MODEL ?= $(or $(MEM0_DEFAULT_LLM_MODEL),qwen2.5:7b)
+EMBEDDER_MODEL ?= $(or $(MEM0_DEFAULT_EMBEDDER_MODEL),bge-m3)
+
+patch:
+	@chmod +x scripts/patch-repo.sh && ./scripts/patch-repo.sh
 
 up:
 	docker compose up -d
@@ -32,9 +43,17 @@ health:
 	@echo -n "Ollama:    "
 	@docker compose exec -T ollama ollama list >/dev/null 2>&1 && echo "OK (GPU)" || echo "Down"
 	@echo -n "Mem0 API:  "
-	@test "$$(curl -s -o /dev/null -w '%{http_code}' "$(API_URL)/docs")" = "200" && echo "OK (200)" || echo "Down"
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$(API_PORT)/docs"); \
+	if [ "$$code" = "200" ]; then echo "OK (200)"; else \
+	  code=$$(curl -s -o /dev/null -w '%{http_code}' "$(API_URL)/docs"); \
+	  [ "$$code" = "200" ] && echo "OK (200)" || echo "Down ($$code)"; \
+	fi
 	@echo -n "Dashboard: "
-	@test "$$(curl -s -o /dev/null -w '%{http_code}' "$(DASHBOARD_URL)/api/health")" = "200" && echo "OK (200)" || echo "Down"
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$(DASHBOARD_PORT)$(DASHBOARD_SUBPATH)/api/health"); \
+	if [ "$$code" = "200" ]; then echo "OK (200)"; else \
+	  code=$$(curl -s -o /dev/null -w '%{http_code}' "$(DASHBOARD_URL)/api/health"); \
+	  [ "$$code" = "200" ] && echo "OK (200)" || echo "Down ($$code)"; \
+	fi
 
 pull-models:
 	@echo "Pulling LLM model ($(LLM_MODEL))..."

@@ -48,7 +48,7 @@ services:
       dockerfile: server/dev.Dockerfile
     restart: unless-stopped
     ports:
-      - "${MEM0_PORT:-8888}:8000"
+      - "${API_PORT:-${MEM0_PORT:-8888}}:8000"
     env_file:
       - .env
     networks:
@@ -63,7 +63,7 @@ services:
       ollama:
         condition: service_started
     command: >
-      sh -c "rm -rf /app/packages && pip install -q --force-reinstall --no-deps mem0ai && alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+      sh -c "rm -rf /app/packages && pip install -q --force-reinstall --no-deps mem0ai && alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*' $${API_SUBPATH:+--root-path $${API_SUBPATH}} --reload"
     environment:
       PYTHONDONTWRITEBYTECODE: 1
       PYTHONUNBUFFERED: 1
@@ -84,24 +84,30 @@ services:
       MEM0_DEFAULT_LLM_MODEL: ${MEM0_DEFAULT_LLM_MODEL:-qwen2.5:7b}
       MEM0_DEFAULT_EMBEDDER_MODEL: ${MEM0_DEFAULT_EMBEDDER_MODEL:-bge-m3}
       MEM0_DEFAULT_EMBEDDER_DIMS: ${MEM0_DEFAULT_EMBEDDER_DIMS:-1024}
+      API_SUBPATH: ${API_SUBPATH:-${MEM0_ROOT_PATH:-}}
 
   mem0-dashboard:
     build:
       context: ./repo/server/dashboard
+      args:
+        BASE_PATH: ${DASHBOARD_SUBPATH:-${DASHBOARD_BASE_PATH:-}}
     restart: unless-stopped
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
     networks:
       - mem0_network
     environment:
-      NEXT_PUBLIC_API_URL: ${DASHBOARD_API_URL:-http://localhost:8888}
+      NEXT_PUBLIC_API_URL: ${API_URL:-${DASHBOARD_API_URL:-http://localhost:8888}}
       API_INTERNAL_URL: http://mem0:8000
       NEXT_PUBLIC_INSTANCE_NAME: ${INSTANCE_NAME:-Mem0}
+      DASHBOARD_SUBPATH: ${DASHBOARD_SUBPATH:-${DASHBOARD_BASE_PATH:-}}
+      BASE_PATH: ${DASHBOARD_SUBPATH:-${DASHBOARD_BASE_PATH:-}}
+      NEXT_PUBLIC_BASE_PATH: ${DASHBOARD_SUBPATH:-${DASHBOARD_BASE_PATH:-}}
     depends_on:
       mem0:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000$${DASHBOARD_SUBPATH:-${DASHBOARD_BASE_PATH:-}}/api/health"]
       interval: 10s
       timeout: 5s
       retries: 3

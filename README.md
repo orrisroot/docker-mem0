@@ -22,11 +22,15 @@ The core repository only tracks lightweight configuration files:
 
 ```
 .
-├── compose.yaml          # Docker Compose specification
-├── .env.example          # Sample environment configuration template
-├── .gitignore            # Ignores repo/, volumes/, and .env
-├── Makefile              # Management shortcuts (make up, make health, etc.)
-└── README.md             # Deployment and operational documentation
+├── apache/
+│   └── mem0-reverse-proxy.conf # Apache 2.4 reverse proxy template for subpaths
+├── compose.yaml                # Docker Compose specification
+├── .env.example                # Sample environment configuration template
+├── .gitignore                  # Ignores repo/, volumes/, and .env
+├── Makefile                    # Management shortcuts (make up, make health, etc.)
+├── README.md                   # Deployment and operational documentation
+└── scripts/
+    └── patch-repo.sh           # Patch script for embedding dims and subpath support
 ```
 
 ### Generated at Runtime (Ignored by Git)
@@ -70,15 +74,16 @@ mkdir -p volumes/postgres volumes/ollama volumes/history
 
 *(Note: The database initialization script `repo/server/init-db.sh` from the cloned Mem0 repository will be automatically mounted to create the `mem0_app` database.)*
 
-### Step 4: Configure Embedding Dimensions in Server Code
-By default, upstream Mem0 assumes a 1536-dimensional embedding model (`text-embedding-3-small`). If you plan to use local models like **`bge-m3` (1024-dim)** or **`nomic-embed-text` (768-dim)**, apply this configuration so `repo/server/main.py` reads `MEM0_DEFAULT_EMBEDDER_DIMS` from `.env`:
+### Step 4: Patch Upstream Repository (Embedding Dimensions & Subpath Support)
+Upstream Mem0 assumes a 1536-dimensional embedding model by default, and its dashboard is configured for the root path. Run the patch helper script (or use `make patch`) to enable custom embedding dimensions (`MEM0_DEFAULT_EMBEDDER_DIMS`) and customizable dashboard subpaths (`basePath`):
 
 ```bash
-# Add MEM0_DEFAULT_EMBEDDER_DIMS support to repo/server/main.py
-sed -i '/DEFAULT_EMBEDDER_MODEL =/a DEFAULT_EMBEDDER_DIMS = int(os.environ.get("MEM0_DEFAULT_EMBEDDER_DIMS", "1536"))' repo/server/main.py
-sed -i '/"collection_name": POSTGRES_COLLECTION_NAME,/a \            "embedding_model_dims": DEFAULT_EMBEDDER_DIMS,' repo/server/main.py
-sed -i 's/"model": DEFAULT_EMBEDDER_MODEL/&, "embedding_dims": DEFAULT_EMBEDDER_DIMS/' repo/server/main.py
+make patch
+# or execute directly:
+# ./scripts/patch-repo.sh
 ```
+
+*(This applies idempotent patches to `repo/server/main.py`, `repo/server/dashboard/next.config.mjs`, and `repo/server/dashboard/Dockerfile`.)*
 
 ### Step 5: Configure Environment Secrets (`.env`)
 Create your `.env` file from the example template and generate secure random secrets:
@@ -174,6 +179,7 @@ Dashboard: OK (200)
 
 | Action | `make` Shortcut | Equivalent Docker Compose Command |
 | :--- | :--- | :--- |
+| **Apply patches** | `make patch` | `./scripts/patch-repo.sh` |
 | **Start stack** | `make up` | `docker compose up -d` |
 | **Stop stack** | `make down` | `docker compose down` |
 | **Restart stack** | `make restart` | `docker compose restart` |
@@ -188,7 +194,7 @@ Dashboard: OK (200)
 
 ## 6. API Usage Examples
 
-Replace `<your-server-host>` and `<your-api-key>` with your deployment's values.
+Replace `<your-server-host>` (or `<your-server-host>/mem0/api` for subpath deployments) and `<your-api-key>` with your deployment's values.
 
 ### Adding Memories (cURL)
 ```bash
@@ -218,6 +224,8 @@ curl -X POST http://<your-server-host>:8888/search \
 ```python
 import requests
 
+# For direct access: http://<your-server-host>:8888
+# For reverse proxy subpath: https://<your-domain>/mem0/api
 API_URL = "http://<your-server-host>:8888"
 API_KEY = "<your-api-key>"
 
@@ -247,3 +255,50 @@ res = requests.post(
 )
 print("Search Results:", res.json())
 ```
+
+---
+
+## 7. Production Reverse Proxy & Subpath Deployment (Apache & WordPress Coexistence)
+
+When deploying behind a public Apache httpd server (port 443 only) where WordPress resides at DocumentRoot (`/`), Mem0 and its Dashboard can be mapped to isolated subpaths under the `/mem0/*` namespace.
+
+### URL Routing Architecture
+
+```
+Client Browser / SDK (HTTPS 443)
+       │
+       ├── https://your-domain.example.com/mem0/?   ──► 302 Redirect to /mem0/ui/
+       │
+       ├── https://your-domain.example.com/mem0/ui/ ──► Reverse Proxy ──► Mem0 Dashboard (Next.js :3000)
+       │
+       ├── https://your-domain.example.com/mem0/api/──► Reverse Proxy ──► Mem0 API (FastAPI :8888)
+       │
+       └── https://your-domain.example.com/*        ──► WordPress (Apache DocumentRoot)
+```
+
+### Setup Steps for Subpath Deployment
+
+1. **Configure `.env`**:
+   Uncomment and set the production subpath variables in `.env`:
+   ```dotenv
+   API_SUBPATH=/mem0/api
+   API_URL=https://your-domain.example.com/mem0/api
+
+   DASHBOARD_SUBPATH=/mem0/ui
+   DASHBOARD_URL=https://your-domain.example.com/mem0/ui
+   ```
+
+2. **Apply Code & Build Patches**:
+   ```bash
+   make patch
+   ```
+
+3. **Rebuild Containers**:
+   ```bash
+   docker compose build --no-cache mem0-dashboard
+   docker compose up -d --force-recreate
+   ```
+
+4. **Install Apache Reverse Proxy Configuration**:
+   Include the template provided in [apache/mem0-reverse-proxy.conf](file:///home/okumura/work/docker-mem0/apache/mem0-reverse-proxy.conf) into your Apache VirtualHost configuration (`*:443`), replacing `<MEM0_BACKEND_HOST>` with the internal IP/hostname of the Mem0 host.
+
